@@ -52,6 +52,10 @@ class LPSFed(nn.Module):
         self.w_lambda = w_lambda
         self.margin_ratio = margin_ratio
         self.avg_margin = nn.Parameter(torch.FloatTensor([0.0]))
+        # For refined margin (Eq. 15): ω balances global and local margin
+        self.omega = 0.5  # Can be made configurable
+        # For adaptive margin (Eq. 8): γ controls margin strength
+        self.gamma = 1.0  # Can be made configurable
         
         ## model parameters
         # Handle pre_train_latent_factor: can be list or tuple
@@ -258,7 +262,7 @@ class LPSFed(nn.Module):
         else:
             self.user_all_embeddings, self.item_all_embeddings = torch.split(self.all_embeddings, [self.n_users, self.n_items], dim=0) # type: ignore
     
-    def forward(self, users, pos_items, neg_items, users_pop, pos_items_pop, neg_items_pop, keep_porb):
+    def forward(self, users, pos_items, neg_items, users_pop, pos_items_pop, neg_items_pop, keep_porb, refined_margin=None):
         if not isinstance(users, torch.Tensor):
             users = torch.tensor(users, device=self.device)
         if pos_items is not None and not isinstance(pos_items, torch.Tensor):
@@ -313,19 +317,18 @@ class LPSFed(nn.Module):
         neg_i_pop_embeddings = F.normalize(neg_i_pop_embeddings, dim=-1)
         
         # Popularity embeddings similarity (for popularity-aware contrastive loss)
+        # Eq. 7: s(f_ψ^bias(p_u), f_φ^bias(p_i)) = cos(ξ̂_ui)
         pos_ratings_pop = torch.sum(u_pop_embeddings * pos_i_pop_embeddings, dim=-1)
         neg_ratings_pop = torch.matmul(torch.unsqueeze(u_pop_embeddings, 1),
                                        neg_i_pop_embeddings.unsqueeze(2)).squeeze(dim=1)
         ratings_pop = torch.cat([pos_ratings_pop[:, None], neg_ratings_pop], dim=1)
         
-        # Compute bias-aware margin from popularity embeddings
-        # Higher popularity similarity -> smaller margin needed (less bias correction)
-        pos_ratings_margin = pos_ratings_pop
-        avg_ratings_margin_scalar = torch.mean(pos_ratings_margin)
-        # Margin ratio controls how much to use personalized vs averaged margin
-        updated_pos_ratings_margin = pos_ratings_margin * (1 - self.margin_ratio) + avg_ratings_margin_scalar * self.margin_ratio
+        # Clamp to [-1, 1] for numerical stability before arccos
+        pos_ratings_pop_clamped = torch.clamp(pos_ratings_pop, -1.0 + 1e-7, 1.0 - 1e-7)
+        # Convert cosine similarity to angle: ξ̂_ui = arccos(cos(ξ̂_ui))
+        xi_hat_ui = torch.arccos(pos_ratings_pop_clamped)
         
-        # Popularity contrastive loss components (InfoNCE style with tau2)
+        # Popularity contrastive loss components (InfoNCE style with tau2) - Eq. 7: Lbias
         pop_numerator = torch.exp(pos_ratings_pop / self.tau2)
         pop_denominator = torch.sum(torch.exp(ratings_pop / self.tau2), dim=-1)
         
@@ -338,25 +341,48 @@ class LPSFed(nn.Module):
         neg_i_embeddings = F.normalize(neg_i_embeddings, dim=-1)
         
         # Main embeddings similarity (for main contrastive loss)
-        pos_ratings_main = torch.sum(u_embeddings * pos_i_embeddings, dim=-1)
-        neg_ratings_main = torch.matmul(torch.unsqueeze(u_embeddings, 1),
-                                       neg_i_embeddings.unsqueeze(2)).squeeze(dim=1)
+        # R̂_ui = arccos(cos(R̂_ui)) where cos(R̂_ui) is the cosine similarity
+        pos_ratings_main_cos = torch.sum(u_embeddings * pos_i_embeddings, dim=-1)
+        neg_ratings_main_cos = torch.matmul(torch.unsqueeze(u_embeddings, 1),
+                                            neg_i_embeddings.unsqueeze(2)).squeeze(dim=1)
         
-        # Apply bias-aware margin to main ratings
-        # Margin is based on popularity: higher popularity -> smaller margin needed
-        # updated_pos_ratings_margin is already computed from popularity embeddings
-        # Convert margin to a scaling factor for the main ratings
-        margin_factor = torch.sigmoid(updated_pos_ratings_margin)
-        # Adjust main ratings with bias-aware margin
-        pos_ratings = pos_ratings_main * (1 + margin_factor * self.margin_ratio)
+        # Clamp to [-1, 1] for numerical stability before arccos
+        pos_ratings_main_cos_clamped = torch.clamp(pos_ratings_main_cos, -1.0 + 1e-7, 1.0 - 1e-7)
+        # Convert to angle: R̂_ui = arccos(cos(R̂_ui))
+        R_hat_ui = torch.arccos(pos_ratings_main_cos_clamped)
         
-        # For negative ratings, we don't apply margin (or apply negative margin)
-        neg_ratings = neg_ratings_main
+        # Eq. 8: Compute adaptive margin Mc_ui = min {γ · ξ̂_ui, π - R̂_ui}
+        # γ controls margin strength, π - R̂_ui ensures monotonic decrease
+        Mc_ui = torch.min(self.gamma * xi_hat_ui, torch.tensor(np.pi, device=self.device) - R_hat_ui)
+        
+        # Eq. 15: Refined margin fMc_ui = ω · Mc_{updated} + (1-ω) · Mc_ui
+        # If refined_margin is provided (from server), use it; otherwise use local margin
+        if refined_margin is not None:
+            if isinstance(refined_margin, torch.Tensor):
+                fMc_ui = self.omega * refined_margin.to(self.device) + (1 - self.omega) * Mc_ui
+            else:
+                fMc_ui = self.omega * torch.tensor(refined_margin, device=self.device) + (1 - self.omega) * Mc_ui
+        else:
+            # If no refined margin from server, use local margin with margin_ratio interpolation
+            avg_Mc_ui = torch.mean(Mc_ui)
+            fMc_ui = self.margin_ratio * avg_Mc_ui + (1 - self.margin_ratio) * Mc_ui
+        
+        # Eq. 9: BC-Loss uses cos(R̂_ui + fMc_ui)
+        # Apply margin to the angle, then convert back to cosine similarity
+        R_hat_ui_with_margin = R_hat_ui + fMc_ui
+        # Clamp to [0, π] to ensure valid angle range
+        R_hat_ui_with_margin = torch.clamp(R_hat_ui_with_margin, 0.0, np.pi)
+        # Convert back to cosine: cos(R̂_ui + fMc_ui)
+        pos_ratings = torch.cos(R_hat_ui_with_margin)
+        
+        # For negative ratings, use original cosine similarity (no margin)
+        neg_ratings = neg_ratings_main_cos
         
         # Prepare ratings for contrastive loss
         ratings = torch.cat([pos_ratings[:, None], neg_ratings], dim=1)
         
-        # Main contrastive loss components (InfoNCE style)
+        # Main contrastive loss components (InfoNCE style) - Eq. 9: LBC
+        # Use cos(R̂_ui + fMc_ui) / τ1 for numerator
         main_numerator = torch.exp(pos_ratings / self.tau1)
         main_denominator = torch.sum(torch.exp(ratings / self.tau1), dim=1)
 
@@ -364,10 +390,13 @@ class LPSFed(nn.Module):
         if self.graph_type == 'random':
             all_embedding = torch.cat([self.user_all_embeddings, self.item_all_embeddings], dim=0)
             avg_embedding = torch.mean(all_embedding, dim=1)
-            
-        self.avg_margin.data.fill_(avg_ratings_margin_scalar.item())
         
-        return pos_ratings, neg_ratings, [], pos_i_embeddings, neg_i_embeddings, pop_numerator, pop_denominator, main_numerator, main_denominator
+        # Eq. 10: Average margin for client c: Mc = (1/M) * (1/N) * Σ_u Σ_i Mc_ui
+        # Store average margin for federated aggregation
+        avg_Mc_ui_scalar = torch.mean(Mc_ui).item()
+        self.avg_margin.data.fill_(avg_Mc_ui_scalar)
+        
+        return pos_ratings, neg_ratings, [], pos_i_embeddings, neg_i_embeddings, pop_numerator, pop_denominator, main_numerator, main_denominator, Mc_ui
     
     def freeze_pop(self):
         self.user_pop_embeddings.requires_grad_(False)

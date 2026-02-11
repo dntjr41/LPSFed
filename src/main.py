@@ -34,8 +34,13 @@ if __name__ == "__main__":
     # if testing the model, we need to read in test set
     if tuning_method == 'test': all_para[11] = para[11] = 'Test'
     
-    add_para = add_para[0:11]
-    add_para_name = ['SEED', 'RANDOMGRAPH_TYPE', 'FED_RATIO', 'FED_METHOD', 'GLOBAL_UPDATE_EPOCH', 'COLD_THRESHOLD', 'tau1', 'tau2', 'w_lambda', 'freeze_epoch', 'margin_ratio']
+    # Include gamma and omega if available (for backward compatibility)
+    if len(add_para) >= 13:
+        add_para = add_para[0:13]
+        add_para_name = ['SEED', 'RANDOMGRAPH_TYPE', 'FED_RATIO', 'FED_METHOD', 'GLOBAL_UPDATE_EPOCH', 'COLD_THRESHOLD', 'tau1', 'tau2', 'w_lambda', 'freeze_epoch', 'margin_ratio', 'gamma', 'omega']
+    else:
+        add_para = add_para[0:11]
+        add_para_name = ['SEED', 'RANDOMGRAPH_TYPE', 'FED_RATIO', 'FED_METHOD', 'GLOBAL_UPDATE_EPOCH', 'COLD_THRESHOLD', 'tau1', 'tau2', 'w_lambda', 'freeze_epoch', 'margin_ratio']
 
     ## read data
     data = read_all_data(all_para, add_para[1])

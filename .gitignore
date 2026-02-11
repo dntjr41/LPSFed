@@ -1,20 +1,5 @@
-data
-full_data
-global_result
-local_result
-log
-new_data
-old_balanced_data
-old_old_data
-pop_biased_check_data
-plotting
-temp_data
 src/result
-src/new_result
-src/experiment_result/
-src/nohup.out
-src/emb/
-src/utils/degree_distribution/
+src/emb
 
 # Python cache / bytecode
 __pycache__/

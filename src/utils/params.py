@@ -1,5 +1,5 @@
 model = 1           # 0:MF, 1:LGCN
-dataset = 2         # 0:Amazon, 1:Gowalla, 2:ML-1M, 3:Yelp, 4:Tmall
+dataset = 0         # 0:Amazon, 1:Gowalla, 2:ML-1M, 3:Yelp, 4:Tmall
 pred_dim = 64       # predictive embedding dimensionality 
 seed = 42
 
@@ -49,13 +49,13 @@ FREQUENCY = 64
 KEEP_PORB = 0.9
 SAMPLE_RATE = 1
 GRAPH_CONV = ['1D', '2D_graph', '2D_hyper_graph'][0]
-PREDICTION = ['InnerProduct', 'MLP3'][0]
+PREDICTION = ['InnerProduct', 'MLP3'][1]
 LOSS_FUNCTION = ['BPR', 'CrossEntropy', 'MSE', 'BC'][3]
 GENERALIZATION = ['Regularization', 'DropOut', 'Regularization+DropOut', 'L2Norm'][0]
 OPTIMIZATION = ['SGD', 'Adagrad', 'RMSProp', 'Adam'][2]
 IF_TRASFORMATION = [False, True][0]                           # 0 for not having transformation matrix,1 for having
 ACTIVATION = ['None', 'Tanh', 'Sigmoid', 'ReLU'][0]          # select the activation function
-POOLING = ['Concat', 'Sum', 'Max', 'Product', 'MLP3'][1]    # select the pooling strategy, the layer of mlp is also changable
+POOLING = ['Concat', 'Sum', 'Max', 'Product', 'MLP3'][4]    # select the pooling strategy, the layer of mlp is also changable
 if POOLING == 'Concat': EMB_DIM = int(pred_dim/(LAYER+1))
 
 ## parameters about model setting (selective for model LGCN)
@@ -84,10 +84,12 @@ FED_RATIO = [['rg', 'avg'], ['rg', 'per'], ['avg', 'avg'], ['avg', 'per']][1]
 FED_METHOD = ['split', 'fedavg', 'lpsfed'][2]
 
 # BC-Loss parameters
-tau1 = 0.07 # Temperature for the L1
-tau2 = 0.08  # Temperature for the L_BC
-w_lambda = 0 # Strength of the Bias-margin
-freeze_epoch = 10 # Freeze the model for the first 5 epochs
+tau1 = 0.07 # Temperature for the L1 (main contrastive loss)
+tau2 = 0.08  # Temperature for the L_BC (bias contrastive loss)
+w_lambda = 0 # Strength of the Bias-margin (weight for pop_loss vs main_loss)
+freeze_epoch = 10 # Freeze the model for the first 10 epochs
 margin_ratio = 0.5  # Margin Ratio for the BC-Loss (Averaging, Personalized)
+gamma = 1.0  # Eq. 8: Margin strength for adaptive margin Mc_ui = min{γ·ξ̂_ui, π-R̂_ui}
+omega = 0.5  # Eq. 15: Weight for refined margin fMc_ui = ω·Mc_updated + (1-ω)·Mc_ui
 
-add_para = [seed, RANDOMGRAPH_TYPE, FED_RATIO, FED_METHOD, GLOBAL_UPDATE_EPOCH, COLD_THRESHOLD, tau1, tau2, w_lambda, freeze_epoch, margin_ratio]
+add_para = [seed, RANDOMGRAPH_TYPE, FED_RATIO, FED_METHOD, GLOBAL_UPDATE_EPOCH, COLD_THRESHOLD, tau1, tau2, w_lambda, freeze_epoch, margin_ratio, gamma, omega]

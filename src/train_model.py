@@ -23,7 +23,16 @@ def train_model(para, add_para, data, path_excel):
     [train_datas, test_datas, val_datas, pre_train_feature_datas, graph_embeddings_1ds, propagation_embeddings, sparse_propagation_matrix, _, eigenvalue_datas, random_data, random_emb] = data
     [GPU_INDEX, _, MODEL, LR, LAMDA, LAYER, EMB_DIM, BATCH_SIZE, TEST_USER_BATCH, N_EPOCH, IF_PRETRAIN, _, TOP_K] = para[0:13]
     [_, _, _, KEEP_PORB, SAMPLE_RATE, GRAPH_CONV, PREDICTION, LOSS_FUNCTION, GENERALIZATION, OPTIMIZATION, IF_TRASFORMATION, ACTIVATION, POOLING, NUM_CLIENTS, USER_NUM] = para[13:]
-    [seed, RANDOMGRAPH_TYPE, FED_RATIO, FED_METHOD, GLOBAL_UPDATE_EPOCH, COLD_THRESHOLD, tau1, tau2, w_lambda, freeze_epoch, margin_ratio] = add_para
+    # Handle both old and new parameter formats for backward compatibility
+    if len(add_para) >= 11:
+        [seed, RANDOMGRAPH_TYPE, FED_RATIO, FED_METHOD, GLOBAL_UPDATE_EPOCH, COLD_THRESHOLD, tau1, tau2, w_lambda, freeze_epoch, margin_ratio] = add_para[:11]
+        # New parameters: gamma and omega (default values if not provided)
+        if len(add_para) >= 13:
+            gamma, omega = add_para[11], add_para[12]
+        else:
+            gamma, omega = 1.0, 0.5  # Default values
+    else:
+        raise ValueError(f"add_para must have at least 11 elements, got {len(add_para)}")
     
     # Train datas(n_clients) - list of [train_data, train_data_interaction, user_num, item_num]
     # Test datas(n_clients) - list of [test_data]
@@ -107,6 +116,9 @@ def train_model(para, add_para, data, path_excel):
                     if_pretrain=IF_PRETRAIN, top_k=TOP_K, if_transformation=IF_TRASFORMATION,
                     activation=ACTIVATION, pooling=POOLING, gpu_index=GPU_INDEX,
                     tau1=tau1, tau2=tau2, w_lambda=w_lambda, margin_ratio=margin_ratio)
+        # Set gamma and omega for adaptive margin and refined margin
+        model.gamma = gamma
+        model.omega = omega
         model.to(cuda)
         models.append(model)
         optimizations.append(model.optimizer)
@@ -165,17 +177,31 @@ def train_model(para, add_para, data, path_excel):
                 neg_items_pop = torch.tensor(neg_items_pop, dtype=torch.long, device=cuda)
                 
                 try:
-                    model_output = models[i](users, pos_items, neg_items, users_pop, pos_items_pop, neg_items_pop, KEEP_PORB)
+                    # Eq. 15: Use refined margin if available from server aggregation
+                    # refined_margin is computed from updated_bc_avg_margin (Eq. 14)
+                    refined_margin_for_batch = None
+                    if LOSS_FUNCTION == 'BC' and updated_bc_avg_margin is not None:
+                        # Convert to tensor if needed
+                        if isinstance(updated_bc_avg_margin, torch.Tensor):
+                            refined_margin_for_batch = updated_bc_avg_margin.item()
+                        else:
+                            refined_margin_for_batch = float(updated_bc_avg_margin)
+                    
+                    model_output = models[i](users, pos_items, neg_items, users_pop, pos_items_pop, neg_items_pop, KEEP_PORB, refined_margin=refined_margin_for_batch)
                     
                     # Check output length and unpack accordingly
-                    if len(model_output) == 9:
+                    if len(model_output) == 10:
+                        pos_scores, neg_scores, avg_embedding, pos_i_embedding, neg_i_embedding, pop_numerator, pop_denominator, main_numerator, main_denominator, Mc_ui = model_output
+                    elif len(model_output) == 9:
                         pos_scores, neg_scores, avg_embedding, pos_i_embedding, neg_i_embedding, pop_numerator, pop_denominator, main_numerator, main_denominator = model_output
+                        Mc_ui = None
                     elif len(model_output) == 5:
                         # Backward compatibility: old format without BC components
                         pos_scores, neg_scores, avg_embedding, pos_i_embedding, neg_i_embedding = model_output
                         pop_numerator, pop_denominator, main_numerator, main_denominator = None, None, None, None
+                        Mc_ui = None
                     else:
-                        raise ValueError(f"Unexpected model output length: {len(model_output)}, expected 5 or 9")
+                        raise ValueError(f"Unexpected model output length: {len(model_output)}, expected 5, 9, or 10")
 
                     # Calculate loss based on loss function
                     if models[i].loss_function == 'BPR':
@@ -348,9 +374,10 @@ def train_model(para, add_para, data, path_excel):
                     
                     if 'avg_margin' in name and updated_bc_avg_margin is not None:
                         origin = param.data
-                        # Optionally update avg_margin (currently commented out in original code)
-                        # total = (1 - update_ratio) * origin.to(device) + update_ratio * updated_bc_avg_margin.to(device)
-                        # param.data = total
+                        # Eq. 14: Update avg_margin with similarity-based distribution
+                        # Mc_{updated} = (M̄ × ρ̄_c) + (Mc × (1 - ρ̄_c))
+                        total = (1 - update_ratio) * origin.to(device) + update_ratio * updated_bc_avg_margin.to(device)
+                        param.data = total
         
         if epoch == (N_EPOCH-1):
             model_name = 'lpsfed' + loss_name
