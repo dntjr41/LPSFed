@@ -1,6 +1,6 @@
 # Low-pass Personalized Subgraph Federated Recommendation (LPSFed)
 
-**ICLR 2026** | [Paper](https://github.com/dntjr41/LPSFed)
+## **ICLR 2026** | [Paper](https://openreview.net/forum?id=SSd3GENRAU)
 
 This repository contains the implementation of **LPSFed**, a robust personalized federated recommender system that addresses subgraph structural imbalance through low-pass spectral filtering and localized popularity bias-aware optimization.
 
