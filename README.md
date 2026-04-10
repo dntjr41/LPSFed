@@ -214,7 +214,6 @@ This project is licensed under the MIT License.
 
 For questions or issues, please contact:
 - Wooseok Sim: dntjr41@skku.edu
-- Hogun Park: hogunpark@skku.edu
 
 ## Acknowledgments
 
